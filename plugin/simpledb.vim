@@ -36,7 +36,7 @@ function! s:ShowResults()
   if bufwinnr(s:result_buf_nr) > 0
     exec bufwinnr(s:result_buf_nr) . "wincmd w"
   else
-    exec 'silent! botright sview +setlocal\ noswapfile\ autoread /tmp/vim-simpledb-result.txt'
+    exec 'silent! botright sview +setlocal\ noswapfile\ autoread /tmp/vim-' . substitute(expand('%:r'), '[^a-zA-Z0-9-]', '_', 'g') . '-result.txt'
     let s:result_buf_nr = bufnr('%')
   endif
 
@@ -60,7 +60,7 @@ function! simpledb#ExecuteSql() range
     let cmdline = s:PostgresCommand(conprops, query)
   endif
 
-  silent execute '!(' . substitute(cmdline, "!", "\\\\!", "g") . ' > /tmp/vim-simpledb-result.txt 2>&1)'
+  silent execute '!(' . substitute(cmdline, "!", "\\\\!", "g") . ' > /tmp/vim-' . substitute(expand('%:r'), '[^a-zA-Z0-9-]', '_', 'g') . '-result.txt 2>&1)'
   call s:ShowResults()
   redraw!
 endfunction
