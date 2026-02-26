@@ -1,81 +1,107 @@
 # vim-simpledb
 
-Vim plugin to execute postgresql or mysql commands from VIM buffer
+Neovim plugin for executing PostgreSQL queries with persistent database connections.
+
+Uses LuaJIT FFI to call libpq directly, keeping connections alive in the Neovim
+process. No subprocess overhead per query -- the connection is established once
+per buffer and reused. Queries execute asynchronously so Neovim never blocks.
+
+Originally forked from [ivalkeen/vim-simpledb](https://github.com/ivalkeen/vim-simpledb),
+now rewritten in Lua.
+
+## Requirements
+
+- **Neovim** 0.8+ (uses `vim.uv`, LuaJIT FFI, Lua APIs)
+- **libpq** shared library (`libpq.so` / `libpq5`)
+  - Already installed if you have `psql` on your system
+  - Or: `apt install libpq5` / `brew install libpq`
+
+No luarocks, no compiled modules, no other dependencies.
 
 ## Installation
 
-### Pathogen
+With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
-If you use git submodules, run this command from your .vim folder:
+```lua
+{ "aidos/vim-simpledb" }
+```
 
-    git submodule add https://github.com/ivalkeen/vim-simpledb bundle/simpledb
+With [packer.nvim](https://github.com/wbthomason/packer.nvim):
 
-Otherwise, , run this command from your .vim folder:
+```lua
+use "aidos/vim-simpledb"
+```
 
-    git clone https://github.com/ivalkeen/vim-simpledb bundle/simpledb
+Or clone into your Neovim packages directory:
 
-### Vundle
-
-Add this line to your vimrc
-
-    Bundle 'ivalkeen/vim-simpledb'
+```sh
+git clone https://github.com/aidos/vim-simpledb \
+  ~/.local/share/nvim/site/pack/plugins/start/vim-simpledb
+```
 
 ## Usage
 
-Default key mapping for execution: `<enter>`.
+1. Create or open a `.sql` file.
 
-1. Create new file with .sql extension (without extensions, mapping would not work)
+2. Put the connection string on line 1 as an SQL comment, using
+   [libpq connection string format](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING):
 
-2. Create first line with commented parameters:
+   Key-value format:
 
-    for psql:
+       -- host=localhost user=postgres dbname=my_database
 
-    `-- -h localhost -U postgres -d my_database`
+   URI format:
 
-    or for mysql:
+       -- postgresql://postgres@localhost/my_database
 
-    `-- db:mysql -D my_database -u root`
+3. Optionally, add a **query wrapper** on lines 2+ (as comments, up to the
+   first blank line). Use `{query}` as a placeholder:
 
-    Note: if you don't want to enter password each time, you should create .pgpass (.my.cnf for mysql) file
+       -- host=localhost dbname=mydb
+       -- BEGIN; {query} ; ROLLBACK;
 
-    There is also usefull key `-q` to avoid messages like 'Timing is on' etc.
+   Every executed query will be wrapped in a transaction that rolls back.
 
-3. Add sql statements to your file
+4. Write your SQL queries separated by blank lines.
 
-4. Hit `<enter>` to execute all not commented queries
+5. **`<leader><Enter>`** in normal mode executes the current paragraph
+   (text block between blank lines).
 
-5. Hit `<leader><enter>` to execute all queries in the current paragraph
+6. **`<Enter>`** in visual mode executes the selected lines.
 
-6. Select multiple lines in visual mode and hit `<enter>` to execute just those queries
+The first time you execute a query in a buffer, simpledb connects to the
+database (asynchronously). The connection persists for the lifetime of the
+buffer -- subsequent queries reuse it with zero connection overhead.
+
+Results appear in a read-only split below the SQL buffer.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `:SimpleDBExecuteSql` | Execute SQL (accepts a range, defaults to entire file) |
+| `:SimpleDBDisconnect` | Close the current buffer's database connection |
+| `:SimpleDBReconnect` | Reconnect (close + re-establish on next query) |
+| `:SimpleDBStatus` | Show connection status for the current buffer |
 
 ## Configuration
 
-If you do not want timings to be displayed, add this to your `.vimrc`:
+```lua
+-- Disable query timing display (default: 1 = enabled)
+vim.g.simpledb_show_timing = 0
 
-    let g:simpledb_show_timing = 0
+-- Disable default keybindings (default: 1 = enabled)
+vim.g.simpledb_use_default_keybindings = 0
+```
 
+Set these in your `init.lua` before the plugin loads.
 
-If you have any questions, [mail me](mailto:itkalin@gmail.com)
+## How it works
 
-## TODO
-
-1. Rewrite code to match vim script conventions
-2. Intellisense
-
-## Contributing
-
-1. Fork it
-2. Create your feature branch (`git checkout -b my-new-feature`)
-3. Commit your changes (`git commit -am 'Added some feature'`)
-4. Push to the branch (`git push origin my-new-feature`)
-5. Create new Pull Request
-
-## Self-Promotion
-
-If you like this project, please follow the repository on [GitHub](https://github.com/ivalkeen/vim-simpledb). Also, you might consider visiting my [blog](http://www.tkalin.com) and following me on [Twitter](https://twitter.com/ivalkeen) and [Github](https://github.com/ivalkeen).
-
-
-[1]: http://i.imgur.com/1UrMOpd.png
-[2]: https://github.com/kien/ctrlp.vim
-[3]: https://github.com/gmarik/vundle
-
+- **LuaJIT FFI** calls libpq functions directly -- no shell subprocesses.
+- **Async I/O**: connections and queries use libpq's non-blocking API,
+  polled via `vim.uv` (libuv). Neovim stays responsive during queries.
+- **Per-buffer connections**: each SQL buffer gets its own `PGconn*` that
+  persists until the buffer is closed or you run `:SimpleDBDisconnect`.
+- **Automatic cleanup**: connections are closed on `BufDelete`, `BufWipeout`,
+  and `VimLeavePre`.
