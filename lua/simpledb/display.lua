@@ -193,9 +193,7 @@ function M.show(source_bufnr, lines)
     win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, result_bufnr)
 
-    -- Reasonable height: half the window or the number of lines, whichever is smaller
-    local height = math.min(#flat + 1, math.floor(vim.o.lines / 3))
-    height = math.max(height, 5)
+    local height = math.floor(vim.o.lines * 0.4)
     vim.api.nvim_win_set_height(win, height)
   end
 
