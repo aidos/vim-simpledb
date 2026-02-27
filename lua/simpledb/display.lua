@@ -5,6 +5,18 @@ local M = {}
 --- Map of source bufnr -> result bufnr.
 local result_buffers = {}
 
+--- Left-pad a string to a given width with spaces.
+--- Works for any width (unlike string.format which caps at 99).
+---@param s string
+---@param width number
+---@return string
+local function pad_right(s, width)
+  if #s >= width then
+    return s
+  end
+  return s .. string.rep(" ", width - #s)
+end
+
 --- Format a result set as aligned text lines (psql-style table).
 ---@param result table { columns=string[], rows=string[][], nrows=number }
 ---@return string[] lines
@@ -28,20 +40,12 @@ local function format_tuples(result)
     end
   end
 
-  -- Cap column widths at a reasonable max to prevent insane wrapping
-  local max_width = 80
-  for c = 1, ncols do
-    if widths[c] > max_width then
-      widths[c] = max_width
-    end
-  end
-
   local lines = {}
 
   -- Header row
   local header_parts = {}
   for c = 1, ncols do
-    header_parts[c] = string.format(" %-" .. widths[c] .. "s ", columns[c])
+    header_parts[c] = " " .. pad_right(columns[c], widths[c]) .. " "
   end
   lines[#lines + 1] = table.concat(header_parts, "|")
 
@@ -58,10 +62,7 @@ local function format_tuples(result)
     for c = 1, ncols do
       local val = row[c]
       local display = val == nil and "NULL" or val
-      if #display > max_width then
-        display = display:sub(1, max_width - 3) .. "..."
-      end
-      parts[c] = string.format(" %-" .. widths[c] .. "s ", display)
+      parts[c] = " " .. pad_right(display, widths[c]) .. " "
     end
     lines[#lines + 1] = table.concat(parts, "|")
   end
