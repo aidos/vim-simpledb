@@ -75,6 +75,34 @@ buffer -- subsequent queries reuse it with zero connection overhead.
 
 Results appear in a read-only split below the SQL buffer.
 
+## Meta-commands
+
+You can use common psql-style backslash commands directly in your SQL buffer.
+They are expanded into equivalent `pg_catalog` / `information_schema` queries
+before execution. Just write the command as a paragraph and execute it with
+`<leader><Enter>`:
+
+| Command | Description |
+|---|---|
+| `\d` | List all tables, views, sequences |
+| `\d table_name` | Describe table: columns, indexes, constraints, FKs, triggers |
+| `\d+ table_name` | Same as `\d` plus column descriptions and table sizes |
+| `\dt` | List tables |
+| `\dt table_name` | Show a specific table |
+| `\dt+` / `\dt+ table_name` | Tables with sizes and descriptions |
+| `\di` / `\di table_name` | List indexes (optionally for a table) |
+| `\dv` | List views |
+| `\ds` | List sequences |
+| `\dn` | List schemas |
+| `\df` | List functions |
+| `\du` / `\dg` | List roles |
+| `\l` | List databases |
+
+Schema-qualified names work too: `\d myschema.mytable`.
+
+Note: meta-commands bypass the query wrapper (if configured), since
+wrapping e.g. a `\d` expansion in `BEGIN; ... ROLLBACK;` is rarely intended.
+
 ## Commands
 
 | Command | Description |

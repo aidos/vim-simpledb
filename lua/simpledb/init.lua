@@ -3,6 +3,7 @@
 
 local conn_manager = require("simpledb.connection")
 local query_mod = require("simpledb.query")
+local metacommand = require("simpledb.metacommand")
 local display = require("simpledb.display")
 
 local M = {}
@@ -21,8 +22,16 @@ function M.execute(firstline, lastline)
     return
   end
 
-  -- Apply wrapper template if present
-  sql = query_mod.apply_wrapper(bufnr, sql)
+  -- Expand psql-style meta-commands (\d, \dt, etc.) into SQL
+  local is_metacommand = false
+  local expanded = metacommand.expand(sql)
+  if expanded then
+    sql = expanded
+    is_metacommand = true
+  else
+    -- Apply wrapper template only to regular SQL, not meta-commands
+    sql = query_mod.apply_wrapper(bufnr, sql)
+  end
 
   -- Show executing status
   vim.api.nvim_echo({ { "simpledb: executing query...", "Normal" } }, false, {})
@@ -45,6 +54,18 @@ function M.execute(firstline, lastline)
       local show_timing = vim.g.simpledb_show_timing
       if show_timing == 0 then
         elapsed_ms = nil
+      end
+
+      -- For meta-commands, filter out empty result sets (e.g. a table with
+      -- no triggers shouldn't show a "(0 rows)" section).
+      if is_metacommand then
+        local filtered = {}
+        for _, r in ipairs(results) do
+          if not (r.nrows and r.nrows == 0) then
+            filtered[#filtered + 1] = r
+          end
+        end
+        results = filtered
       end
 
       local lines = display.format_results(results, elapsed_ms)
