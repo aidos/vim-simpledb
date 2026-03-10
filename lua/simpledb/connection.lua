@@ -161,8 +161,54 @@ function M.connect_async(bufnr, conninfo, callback)
   poll_connect()
 end
 
+--- Parse a single PGresult into a structured entry.
+---@param res ffi.cdata* PGresult pointer
+---@return table entry
+local function parse_result(res)
+  local status = pq.result_status(res)
+  local entry = { status = status }
+
+  if status == pq.PGRES_TUPLES_OK or status == pq.PGRES_SINGLE_TUPLE then
+    -- SELECT-like: extract columns and rows
+    local ncols = pq.nfields(res)
+    local nrows = pq.ntuples(res)
+    local columns = {}
+    for c = 0, ncols - 1 do
+      columns[c + 1] = pq.fname(res, c)
+    end
+    local rows = {}
+    for r = 0, nrows - 1 do
+      local row = {}
+      for c = 0, ncols - 1 do
+        if pq.getisnull(res, r, c) then
+          row[c + 1] = nil -- NULL
+        else
+          row[c + 1] = pq.getvalue(res, r, c)
+        end
+      end
+      rows[r + 1] = row
+    end
+    entry.columns = columns
+    entry.rows = rows
+    entry.nrows = nrows
+  elseif status == pq.PGRES_COMMAND_OK then
+    -- INSERT/UPDATE/DELETE/CREATE etc.
+    entry.cmd_status = pq.cmd_status(res)
+    entry.cmd_tuples = pq.cmd_tuples(res)
+  elseif status == pq.PGRES_FATAL_ERROR then
+    entry.error = pq.result_error_message(res)
+  elseif status == pq.PGRES_EMPTY_QUERY then
+    entry.error = "empty query"
+  else
+    entry.error = pq.result_error_message(res)
+  end
+
+  return entry
+end
+
 --- Collect all results from a completed async query.
 --- PQgetResult must be called until it returns NULL to clear the pipeline.
+--- Handles COPY OUT by draining copy data, and COPY IN by cancelling.
 ---@param state table connection state
 ---@return table results list of parsed result tables
 local function collect_results(state)
@@ -174,47 +220,111 @@ local function collect_results(state)
     end
 
     local status = pq.result_status(res)
-    local entry = { status = status }
 
-    if status == pq.PGRES_TUPLES_OK or status == pq.PGRES_SINGLE_TUPLE then
-      -- SELECT-like: extract columns and rows
-      local ncols = pq.nfields(res)
-      local nrows = pq.ntuples(res)
-      local columns = {}
-      for c = 0, ncols - 1 do
-        columns[c + 1] = pq.fname(res, c)
-      end
-      local rows = {}
-      for r = 0, nrows - 1 do
-        local row = {}
-        for c = 0, ncols - 1 do
-          if pq.getisnull(res, r, c) then
-            row[c + 1] = nil -- NULL
-          else
-            row[c + 1] = pq.getvalue(res, r, c)
-          end
-        end
-        rows[r + 1] = row
-      end
-      entry.columns = columns
-      entry.rows = rows
-      entry.nrows = nrows
-    elseif status == pq.PGRES_COMMAND_OK then
-      -- INSERT/UPDATE/DELETE/CREATE etc.
-      entry.cmd_status = pq.cmd_status(res)
-      entry.cmd_tuples = pq.cmd_tuples(res)
-    elseif status == pq.PGRES_FATAL_ERROR then
-      entry.error = pq.result_error_message(res)
-    elseif status == pq.PGRES_EMPTY_QUERY then
-      entry.error = "empty query"
+    if status == pq.PGRES_COPY_OUT then
+      -- Signal that we need async COPY OUT draining.
+      -- Store partial results collected so far.
+      state._partial_results = results
+      state._copy_chunks = {}
+      return nil -- signal: need COPY OUT drain
+    elseif status == pq.PGRES_COPY_IN then
+      -- We don't support COPY FROM STDIN; cancel it
+      pq.put_copy_end(state.conn, "COPY FROM STDIN not supported by simpledb")
+      results[#results + 1] = {
+        status = pq.PGRES_FATAL_ERROR,
+        error = "COPY FROM STDIN is not supported by simpledb",
+      }
     else
-      entry.error = pq.result_error_message(res)
+      results[#results + 1] = parse_result(res)
     end
-
-    results[#results + 1] = entry
     -- res will be PQclear'd by ffi.gc when it goes out of scope
   end
   return results
+end
+
+--- Async drain of COPY OUT data. Polls for readable, consumes input, then
+--- reads copy data until done or error.
+---@param state table connection state
+---@param on_done fun() called when COPY OUT is fully drained
+local function drain_copy_out(state, on_done)
+  local fd = pq.socket(state.conn)
+  if fd < 0 then
+    on_done()
+    return
+  end
+
+  stop_poll(state)
+  local poll_handle = uv.new_poll(fd)
+  state.poll_handle = poll_handle
+
+  local function poll_copy()
+    poll_handle:start("r", function(poll_err)
+      if poll_err then
+        stop_poll(state)
+        on_done()
+        return
+      end
+
+      if not pq.consume_input(state.conn) then
+        stop_poll(state)
+        on_done()
+        return
+      end
+
+      -- Try to read available copy data
+      state._copy_chunks = state._copy_chunks or {}
+      while true do
+        local len, data = pq.get_copy_data(state.conn, true)
+        if len > 0 and data then
+          state._copy_chunks[#state._copy_chunks + 1] = data
+        elseif len == 0 then
+          -- Need more data, poll again
+          poll_copy()
+          return
+        elseif len == -1 then
+          -- COPY done
+          stop_poll(state)
+          -- Build the result entry from accumulated chunks
+          local copy_chunks = state._copy_chunks
+          state._copy_chunks = nil
+          state._copy_in_progress = nil
+          if #copy_chunks > 0 then
+            local copy_text = table.concat(copy_chunks)
+            local rows = {}
+            for line in copy_text:gmatch("([^\n]*)\n?") do
+              if line ~= "" then
+                rows[#rows + 1] = { line }
+              end
+            end
+            local partial = state._partial_results or {}
+            partial[#partial + 1] = {
+              status = pq.PGRES_TUPLES_OK,
+              columns = { "COPY" },
+              rows = rows,
+              nrows = #rows,
+            }
+            state._partial_results = partial
+          end
+          on_done()
+          return
+        else -- len == -2, error
+          stop_poll(state)
+          state._copy_chunks = nil
+          state._copy_in_progress = nil
+          local partial = state._partial_results or {}
+          partial[#partial + 1] = {
+            status = pq.PGRES_FATAL_ERROR,
+            error = pq.error_message(state.conn),
+          }
+          state._partial_results = partial
+          on_done()
+          return
+        end
+      end
+    end)
+  end
+
+  poll_copy()
 end
 
 --- Send a query on an established connection. Fully async.
@@ -301,10 +411,40 @@ function M.send_query(bufnr, sql, callback)
         return
       end
 
-      -- Query complete, collect results
+      -- Try to collect results (may return nil if COPY OUT needs more data)
       stop_poll(state)
-      local elapsed_ms = (uv.hrtime() - start_time) / 1e6
       local results = collect_results(state)
+      if results == nil then
+        -- COPY OUT in progress, need to read more data from socket
+        drain_copy_out(state, function()
+          -- After COPY drain, collect remaining results (final COMMAND_OK etc.)
+          local all_results = state._partial_results or {}
+          state._partial_results = nil
+          -- Continue collecting any remaining PQgetResult entries
+          while true do
+            local res2 = pq.get_result(state.conn)
+            if res2 == nil then break end
+            local s = pq.result_status(res2)
+            if s == pq.PGRES_COMMAND_OK then
+              all_results[#all_results + 1] = parse_result(res2)
+            end
+            -- skip other statuses (already handled)
+          end
+          local elapsed_ms2 = (uv.hrtime() - start_time) / 1e6
+          state.state = "ready"
+          vim.schedule(function()
+            callback(nil, all_results, elapsed_ms2)
+          end)
+          if #state.queue > 0 then
+            local next_item = table.remove(state.queue, 1)
+            vim.schedule(function()
+              M.send_query(bufnr, next_item.sql, next_item.callback)
+            end)
+          end
+        end)
+        return
+      end
+      local elapsed_ms = (uv.hrtime() - start_time) / 1e6
       state.state = "ready"
 
       vim.schedule(function()

@@ -95,6 +95,11 @@ ffi.cdef([[
   char *PQcmdTuples(const PGresult *res);
   char *PQcmdStatus(const PGresult *res);
 
+  /* COPY support */
+  int PQgetCopyData(PGconn *conn, char **buffer, int async);
+  int PQputCopyEnd(PGconn *conn, const char *errormsg);
+  void PQfreemem(void *ptr);
+
   /* Result memory */
   void PQclear(PGresult *res);
 ]])
@@ -333,6 +338,31 @@ function M.conn_info(conn)
     host = cstr(lib.PQhost(conn)) or "",
     user = cstr(lib.PQuser(conn)) or "",
   }
+end
+
+--- Get a row of COPY OUT data.
+--- Returns: >0 = length (data in buffer), 0 = no data yet (async), -1 = done, -2 = error
+---@param conn ffi.cdata* PGconn pointer
+---@param async boolean use async mode
+---@return number length, string|nil data
+function M.get_copy_data(conn, async)
+  local buf = ffi.new("char*[1]")
+  local len = lib.PQgetCopyData(conn, buf, async and 1 or 0)
+  len = tonumber(len)
+  local data = nil
+  if len > 0 and buf[0] ~= nil then
+    data = ffi.string(buf[0], len)
+    lib.PQfreemem(buf[0])
+  end
+  return len, data
+end
+
+--- End a COPY IN operation.
+---@param conn ffi.cdata* PGconn pointer
+---@param errmsg string|nil error message (nil for success)
+---@return boolean success
+function M.put_copy_end(conn, errmsg)
+  return lib.PQputCopyEnd(conn, errmsg) == 1
 end
 
 --- Start an async connection reset (reconnect).

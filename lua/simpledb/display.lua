@@ -45,14 +45,22 @@ local function format_tuples(result)
   -- Header row
   local header_parts = {}
   for c = 1, ncols do
-    header_parts[c] = " " .. pad_right(columns[c], widths[c]) .. " "
+    if c < ncols then
+      header_parts[c] = " " .. pad_right(columns[c], widths[c]) .. " "
+    else
+      header_parts[c] = " " .. columns[c]
+    end
   end
   lines[#lines + 1] = table.concat(header_parts, "|")
 
   -- Separator
   local sep_parts = {}
   for c = 1, ncols do
-    sep_parts[c] = string.rep("-", widths[c] + 2)
+    if c < ncols then
+      sep_parts[c] = string.rep("-", widths[c] + 2)
+    else
+      sep_parts[c] = string.rep("-", #columns[c] + 2)
+    end
   end
   lines[#lines + 1] = table.concat(sep_parts, "+")
 
@@ -62,7 +70,11 @@ local function format_tuples(result)
     for c = 1, ncols do
       local val = row[c]
       local display = val == nil and "NULL" or val
-      parts[c] = " " .. pad_right(display, widths[c]) .. " "
+      if c < ncols then
+        parts[c] = " " .. pad_right(display, widths[c]) .. " "
+      else
+        parts[c] = " " .. display
+      end
     end
     lines[#lines + 1] = table.concat(parts, "|")
   end
